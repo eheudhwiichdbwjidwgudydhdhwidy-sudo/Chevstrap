@@ -1,0 +1,338 @@
+-- DevToolbox LocalScript (safe for development & testing only)
+-- Author: ChatGPT (for testing in your own Roblox places)
+-- Put this LocalScript in StarterPlayer -> StarterPlayerScripts
+-- WARNING: Use only in games you own or for local testing. Do NOT use to cheat in other people's games.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local StarterGui = game:GetService("StarterGui")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local camera = workspace.CurrentCamera
+
+-- Settings table (modifiable by UI)
+local settings = {
+    uiVisible = true,
+    autoSwing = false,         -- local-only simulated swing
+    spamClick = false,         -- local-only visual spam
+    fpsBoost = false,          -- disable/enable client postprocessing & particles
+    speedEnabled = false,
+    speedValue = 24,           -- WalkSpeed
+    teleportPoints = {},       -- saved teleport CFrames
+    autoLock = false,          -- client-side camera lock to nearest humanoid
+    autoLockRange = 50,
+}
+
+-- Simple UI creation (ScreenGui)
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "DevToolboxGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "Main"
+mainFrame.AnchorPoint = Vector2.new(0, 0)
+mainFrame.Position = UDim2.new(0.02, 0, 0.12, 0)
+mainFrame.Size = UDim2.new(0, 340, 0, 380)
+mainFrame.BackgroundTransparency = 0.15
+mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+mainFrame.BorderSizePixel = 0
+mainFrame.Parent = screenGui
+
+local title = Instance.new("TextLabel")
+title.Parent = mainFrame
+title.Size = UDim2.new(1, 0, 0, 32)
+title.BackgroundTransparency = 1
+title.Font = Enum.Font.SourceSansBold
+title.TextSize = 18
+title.TextColor3 = Color3.new(1,1,1)
+title.Text = "DevToolbox — Testing Only"
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.PaddingLeft = UDim.new(0,8)
+
+-- Utility to create toggle rows
+local function makeToggle(text, startY, initial, callback)
+    local lbl = Instance.new("TextLabel")
+    lbl.Parent = mainFrame
+    lbl.Position = UDim2.new(0, 10, 0, startY)
+    lbl.Size = UDim2.new(0, 220, 0, 30)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.SourceSans
+    lbl.TextSize = 16
+    lbl.TextColor3 = Color3.new(1,1,1)
+    lbl.Text = text
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local btn = Instance.new("TextButton")
+    btn.Parent = mainFrame
+    btn.Position = UDim2.new(0, 240, 0, startY)
+    btn.Size = UDim2.new(0, 80, 0, 30)
+    btn.Font = Enum.Font.SourceSansBold
+    btn.TextSize = 14
+    btn.Text = initial and "ON" or "OFF"
+    btn.BackgroundColor3 = initial and Color3.fromRGB(50,140,50) or Color3.fromRGB(140,50,50)
+    btn.MouseButton1Click:Connect(function()
+        local new = not (btn.Text == "ON")
+        btn.Text = new and "ON" or "OFF"
+        btn.BackgroundColor3 = new and Color3.fromRGB(50,140,50) or Color3.fromRGB(140,50,50)
+        callback(new)
+    end)
+    return btn
+end
+
+-- Create toggles
+local y = 46
+local uiToggle = makeToggle("Show UI (Ctrl+T)", y, true, function(v) screenGui.Enabled = v end); y = y + 36
+local autoSwingToggle = makeToggle("Auto Swing (local)", y, false, function(v) settings.autoSwing = v end); y = y + 36
+local spamClickToggle = makeToggle("Spam Click Visual", y, false, function(v) settings.spamClick = v end); y = y + 36
+local fpsToggle = makeToggle("FPS Boost (client)", y, false, function(v)
+    settings.fpsBoost = v
+    if v then
+        -- disable local particle effects and postprocessing for performance
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam") then
+                pcall(function() obj.Enabled = false end)
+            end
+        end
+        -- try to turn off Lighting effects (client side)
+        pcall(function()
+            Lighting.GlobalShadows = false
+            if Lighting:FindFirstChildOfClass("BloomEffect") then Lighting:FindFirstChildOfClass("BloomEffect").Enabled = false end
+            if Lighting:FindFirstChildOfClass("ColorCorrectionEffect") then Lighting:FindFirstChildOfClass("ColorCorrectionEffect").Enabled = false end
+            if Lighting:FindFirstChildOfClass("SunRaysEffect") then Lighting:FindFirstChildOfClass("SunRaysEffect").Enabled = false end
+            if Lighting:FindFirstChildOfClass("DepthOfFieldEffect") then Lighting:FindFirstChildOfClass("DepthOfFieldEffect").Enabled = false end
+            -- Atmosphere may still be present; try to lower density
+            local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+            if atm then atm.Density = 0 end
+        end)
+    else
+        -- re-enable is game-dependent; recommend rejoining to restore defaults
+        StarterGui:SetCore("SendNotification", {
+            Title = "FPS Boost Off";
+            Text = "Some visuals may remain disabled. Rejoin to restore defaults.";
+            Duration = 4;
+        })
+    end
+end); y = y + 36
+
+local speedToggle = makeToggle("Enable Speed (client)", y, false, function(v)
+    settings.speedEnabled = v
+    if v and character and character:FindFirstChild("Humanoid") then
+        character.Humanoid.WalkSpeed = settings.speedValue
+    elseif character and character:FindFirstChild("Humanoid") then
+        character.Humanoid.WalkSpeed = 16 -- default
+    end
+end); y = y + 36
+
+-- Speed slider / input
+local speedLabel = Instance.new("TextLabel")
+speedLabel.Parent = mainFrame
+speedLabel.Position = UDim2.new(0,10,0,y)
+speedLabel.Size = UDim2.new(0,200,0,30)
+speedLabel.BackgroundTransparency = 1
+speedLabel.Font = Enum.Font.SourceSans
+speedLabel.TextSize = 14
+speedLabel.TextColor3 = Color3.new(1,1,1)
+speedLabel.Text = "Speed: "..settings.speedValue
+speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local speedInput = Instance.new("TextBox")
+speedInput.Parent = mainFrame
+speedInput.Position = UDim2.new(0,240,0,y)
+speedInput.Size = UDim2.new(0,80,0,30)
+speedInput.Font = Enum.Font.SourceSans
+speedInput.TextSize = 14
+speedInput.Text = tostring(settings.speedValue)
+speedInput.ClearTextOnFocus = false
+speedInput.FocusLost:Connect(function(enter)
+    local n = tonumber(speedInput.Text)
+    if n and n > 0 and n <= 1000 then
+        settings.speedValue = n
+        speedLabel.Text = "Speed: "..n
+        if settings.speedEnabled and character and character:FindFirstChild("Humanoid") then
+            character.Humanoid.WalkSpeed = n
+        end
+    else
+        speedInput.Text = tostring(settings.speedValue)
+    end
+end)
+y = y + 40
+
+-- Teleport save / list
+local saveTPBtn = Instance.new("TextButton")
+saveTPBtn.Parent = mainFrame
+saveTPBtn.Position = UDim2.new(0,10,0,y)
+saveTPBtn.Size = UDim2.new(0,150,0,30)
+saveTPBtn.Font = Enum.Font.SourceSansBold
+saveTPBtn.TextSize = 14
+saveTPBtn.Text = "Save Teleport Point"
+saveTPBtn.MouseButton1Click:Connect(function()
+    if character and character:FindFirstChild("HumanoidRootPart") then
+        local cf = character.HumanoidRootPart.CFrame
+        table.insert(settings.teleportPoints, cf)
+        StarterGui:SetCore("SendNotification", {
+            Title = "Teleport Saved";
+            Text = "Saved point #"..#settings.teleportPoints;
+            Duration = 2;
+        })
+    end
+end)
+
+local tpList = Instance.new("TextButton")
+tpList.Parent = mainFrame
+tpList.Position = UDim2.new(0,170,0,y)
+tpList.Size = UDim2.new(0,150,0,30)
+tpList.Font = Enum.Font.SourceSansBold
+tpList.TextSize = 14
+tpList.Text = "Teleport: Open"
+tpList.MouseButton1Click:Connect(function()
+    -- simple selector: teleport to last saved point
+    if #settings.teleportPoints > 0 and character and character:FindFirstChild("HumanoidRootPart") then
+        local cf = settings.teleportPoints[#settings.teleportPoints]
+        character.HumanoidRootPart.CFrame = cf + Vector3.new(0,3,0)
+    else
+        StarterGui:SetCore("SendNotification", {
+            Title = "Teleport";
+            Text = "No saved points.";
+            Duration = 2;
+        })
+    end
+end)
+y = y + 40
+
+-- Auto-lock toggle
+local autoLockToggle = makeToggle("Auto Camera Lock (nearest)", y, false, function(v) settings.autoLock = v end); y = y + 36
+
+-- Small instructions
+local instr = Instance.new("TextLabel")
+instr.Parent = mainFrame
+instr.Position = UDim2.new(0,8,0,y)
+instr.Size = UDim2.new(1,-16,0,60)
+instr.BackgroundTransparency = 1
+instr.Font = Enum.Font.SourceSans
+instr.TextSize = 12
+instr.TextColor3 = Color3.new(0.8,0.8,0.8)
+instr.Text = "Notes:\n- All features are CLIENT-SIDE and for testing only.\n- Do NOT use to gain advantage in other games.\n- Toggle UI with Ctrl+T."
+instr.TextXAlignment = Enum.TextXAlignment.Left
+
+-- Keybind to show/hide UI
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.T and UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+        screenGui.Enabled = not screenGui.Enabled
+    end
+end)
+
+-- Basic visual spam effect (client-side)
+local function doSpamVisual()
+    -- create a small ephemeral part at mouse position for effect
+    local mouse = player:GetMouse()
+    local pos = mouse.Hit and mouse.Hit.p or (camera.CFrame.Position + camera.CFrame.LookVector * 10)
+    local part = Instance.new("Part")
+    part.Size = Vector3.new(0.2,0.2,0.2)
+    part.Anchored = true
+    part.CanCollide = false
+    part.CFrame = CFrame.new(pos)
+    part.Transparency = 0.3
+    part.Parent = workspace
+    game:GetService("Debris"):AddItem(part, 0.35)
+end
+
+-- Auto-swing simulation (local only)
+local lastSwing = 0
+local swingInterval = 0.25 -- seconds between local swings
+local function tryAutoSwing(dt)
+    if not settings.autoSwing then return end
+    local now = tick()
+    if now - lastSwing >= swingInterval then
+        lastSwing = now
+        -- play a local animation (if tool present, play its animation)
+        -- This simple approach: brief camera shake to simulate swing
+        local origCFrame = camera.CFrame
+        camera.CFrame = camera.CFrame * CFrame.Angles(0.02, 0, 0)
+        wait(0.03)
+        camera.CFrame = origCFrame
+        -- Optionally show a visual hit marker
+        StarterGui:SetCore("SendNotification", {Title="Auto Swing"; Text="(local simulation)"; Duration=0.6})
+    end
+end
+
+-- Find nearest target (client-side only, does NOT damage others)
+local function findNearestHumanoid(range)
+    local nearest, dist = nil, range or math.huge
+    for _, model in ipairs(workspace:GetDescendants()) do
+        if model:IsA("Model") and model ~= character and model:FindFirstChild("Humanoid") and model:FindFirstChild("HumanoidRootPart") then
+            local hrp = model.HumanoidRootPart
+            local d = (hrp.Position - (character and character:FindFirstChild("HumanoidRootPart") and character.HumanoidRootPart.Position or camera.CFrame.Position)).Magnitude
+            if d < dist and d <= (settings.autoLockRange or 50) then
+                dist = d
+                nearest = model
+            end
+        end
+    end
+    return nearest
+end
+
+-- Auto-lock camera to nearest
+local autoLockConn
+autoLockConn = RunService.RenderStepped:Connect(function(dt)
+    -- update references
+    character = player.Character or player.CharacterAdded:Wait()
+    if settings.autoSwing then
+        tryAutoSwing(dt)
+    end
+    if settings.spamClick then
+        -- spam a visual effect around the mouse quickly (client only)
+        if math.random() < 0.35 then
+            doSpamVisual()
+        end
+    end
+    if settings.speedEnabled and character and character:FindFirstChild("Humanoid") then
+        character.Humanoid.WalkSpeed = settings.speedValue
+    end
+    if settings.autoLock and character and character:FindFirstChild("HumanoidRootPart") then
+        local target = findNearestHumanoid(settings.autoLockRange)
+        if target and target:FindFirstChild("HumanoidRootPart") then
+            local tgt = target.HumanoidRootPart
+            -- client-side camera follow: smoothly move camera CFrame toward target
+            local targetCFrame = CFrame.new(tgt.Position + Vector3.new(0, 5, 7), tgt.Position)
+            camera.CFrame = camera.CFrame:Lerp(targetCFrame, 0.12)
+        end
+    end
+end)
+
+-- Cleanup on character respawn to keep things stable
+player.CharacterAdded:Connect(function(char)
+    character = char
+    wait(0.5)
+    if settings.speedEnabled and character:FindFirstChild("Humanoid") then
+        character.Humanoid.WalkSpeed = settings.speedValue
+    end
+end)
+
+-- Final convenience: allow teleport to spawn points with number keys
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        local key = input.KeyCode.Value
+        -- Number keys 1..9 map to teleport saved points 1..9
+        if input.KeyCode >= Enum.KeyCode.One and input.KeyCode <= Enum.KeyCode.Nine then
+            local idx = tonumber(string.sub(input.KeyCode.Name, -1))
+            if settings.teleportPoints[idx] and character and character:FindFirstChild("HumanoidRootPart") then
+                character.HumanoidRootPart.CFrame = settings.teleportPoints[idx] + Vector3.new(0,3,0)
+            end
+        end
+    end
+end)
+
+-- Friendly startup message
+StarterGui:SetCore("SendNotification", {
+    Title = "DevToolbox Loaded";
+    Text = "Client dev UI active. Use only for testing in your own place.";
+    Duration = 4;
+})
+
+-- End of LocalScript
